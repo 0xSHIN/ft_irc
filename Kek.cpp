@@ -1,27 +1,23 @@
+#include "Channel.hpp"
+#include "Commands.hpp"
+#include "Kek.hpp"
+#include <sys/socket.h>
 #include <iostream>
 #include <cstring>
 #include <cstdlib>
 #include <sys/types.h>
-#include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <vector>
 #include <poll.h>
-#include <string>
 #include <map>
 
-#include "Commands.hpp"
-#include "Channel.hpp"
-
-#define MAX_CLIENTS 1024
 #define BUFFER_SIZE 1024
 
-struct Client {
-    int fd;
-    bool authenticated;
-    std::string buffer;
-    Client() : fd(-1), authenticated(false) {}
-};
+std::string trim(const std::string &str) {
+    size_t first = str.find_first_not_of(" \r\n");
+    size_t last = str.find_last_not_of(" \r\n");
+    return (first == std::string::npos || last == std::string::npos) ? "" : str.substr(first, last - first + 1);
+}
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {
@@ -29,7 +25,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    int port = atoi(argv[1]);
+    int port = std::atoi(argv[1]);
     std::string password = argv[2];
 
     int serverSock = socket(AF_INET, SOCK_STREAM, 0);
@@ -39,7 +35,7 @@ int main(int argc, char *argv[]) {
     }
 
     sockaddr_in serverAddr;
-    memset(&serverAddr, 0, sizeof(serverAddr));
+    std::memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_addr.s_addr = INADDR_ANY;
     serverAddr.sin_port = htons(port);
@@ -82,14 +78,13 @@ int main(int argc, char *argv[]) {
             clients[clientSock] = Client();
             clients[clientSock].fd = clientSock;
 
-            send(clientSock, "Enter password:\n", 16, 0);
+            send(clientSock, "Connect using PASS [password]:\n", 31, 0);
         }
 
         for (size_t i = 1; i < fds.size(); i++) {
             if (fds[i].revents & POLLIN) {
                 char buffer[BUFFER_SIZE];
                 int bytesRead = recv(fds[i].fd, buffer, BUFFER_SIZE - 1, 0);
-
                 if (bytesRead <= 0) {
                     close(fds[i].fd);
                     clients.erase(fds[i].fd);
@@ -104,18 +99,76 @@ int main(int argc, char *argv[]) {
                 size_t pos;
                 while ((pos = clients[fds[i].fd].buffer.find('\n')) != std::string::npos) {
                     std::string message = clients[fds[i].fd].buffer.substr(0, pos);
+                    message = trim(message);
                     clients[fds[i].fd].buffer.erase(0, pos + 1);
 
-                    if (!clients[fds[i].fd].authenticated) {
-                        if (message == password) {
-                            clients[fds[i].fd].authenticated = true;
-                            send(fds[i].fd, "Authentication successful.\n", 27, 0);
-                        } else {
-                            send(fds[i].fd, "Authentication failed. Try again:\n", 34, 0);
-                        }
-                    } else {
-                        std::cout << "Message from client " << fds[i].fd << ": " << message << std::endl;
+                    if (clients[fds[i].fd].authenticated)
+                    {
                         processMessage(message, fds[i].fd);
+                        continue;
+                    }
+
+                    if (message.substr(0, 3) == "CAP") {
+                        if (message.find("LS") != std::string::npos) {
+                            send(fds[i].fd, "CAP * LS\r\n", 10, 0); // No capabilities
+                        } else if (message.find("REQ") != std::string::npos) {
+                            // Handle capability requests as needed
+                        } else if (message.find("END") != std::string::npos) {
+                            send(fds[i].fd, "CAP * ACK\r\n", 11, 0);
+                        }
+                        continue;
+                    }
+
+                    if (!clients[fds[i].fd].passwordVerified) {
+                        if (message.substr(0, 4) == "PASS") {
+                            std::string clientPassword = message.substr(5);
+                            std::cout << "Received pass: '" << clientPassword << "'" << std::endl; // Debugging output
+                            if (clientPassword == password) {
+                                clients[fds[i].fd].passwordVerified = true;
+                                send(fds[i].fd, "Authentication successful.\r\n", 28, 0);
+                            } else {
+                                send(fds[i].fd, "464 :Password incorrect\r\n", 25, 0);
+                                continue;
+                            }
+                        }
+                    }
+
+                    if (clients[fds[i].fd].passwordVerified) {
+                        if (message.substr(0, 4) == "NICK") {
+                            handleNick(fds[i].fd, message.substr(5));
+                            clients[fds[i].fd].nickname = message.substr(5);
+                            clients[fds[i].fd].nickReceived = true;
+                        }
+
+                        if (message.substr(0, 4) == "USER") {
+                            // Parse USER command
+                            std::istringstream iss(message.substr(5));
+                            std::string username, hostname, servername, realname;
+                            iss >> username >> hostname >> servername;
+                            std::getline(iss, realname);
+                            realname = trim(realname);
+
+                            if (username.empty() || realname.empty()) {
+                                send(fds[i].fd, "461 USER :Not enough parameters\r\n", 35, 0);
+                                continue;
+                            }
+
+                            clients[fds[i].fd].username = username;
+                            clients[fds[i].fd].hostname = hostname;
+                            clients[fds[i].fd].servername = servername;
+                            clients[fds[i].fd].realname = realname;
+                            clients[fds[i].fd].userReceived = true;
+                        }
+
+                        // After both NICK and USER, authenticate the user
+                        if (clients[fds[i].fd].nickReceived && clients[fds[i].fd].userReceived) {
+                            clients[fds[i].fd].authenticated = true;
+
+                            std::string welcomeMsg = std::string(":") + "irc.localhost" + " 001 " + clients[fds[i].fd].nickname +
+                                                    " :Welcome to the IRC Network, " + clients[fds[i].fd].nickname + "\r\n";
+                            send(fds[i].fd, welcomeMsg.c_str(), welcomeMsg.length(), 0);
+                            std::cout << "Received msg: '" << message << "'" << std::endl; // Debugging output
+                        }
                     }
                 }
             }

@@ -1,40 +1,34 @@
 #ifndef CHANNEL_HPP
 #define CHANNEL_HPP
 
+#include "Kek.hpp"
+#include <map>
 #include <string>
 #include <vector>
-#include <map>
-#include "Commands.hpp"
+#include <set>
 
-// Define a struct to represent a channel
-struct Channel {
+class Channel {
+public:
     std::string name;
     std::string topic;
     std::vector<int> invitedUsers;
-    bool inviteOnly;
-    bool topicRestricted;
+    std::vector<char> _mode;
     int userLimit;
     std::string key;
-    std::vector<int> clients;    // Store connected clients' socket IDs
-    std::vector<int> operators;  // Store operator socket IDs
-    // Default constructor
-    Channel() : name(""), topic(""), inviteOnly(false), userLimit(10), key("") {}
+    std::vector<int> clients;
+    std::vector<int> operators;
+    bool inviteOnly;
+    bool topicRestricted;
 
-    // Parameterized constructor
+    Channel() : userLimit(0), inviteOnly(false), topicRestricted(false) {}
     Channel(const std::string& channelName)
-        : name(channelName), topic(""), inviteOnly(false), userLimit(10), key("") {}
+        : name(channelName), topic(""), userLimit(10), key(""), inviteOnly(false), topicRestricted(false) {}
 };
 
-struct User {
-    int sockfd;
-    std::string nickname;
-    std::vector<std::string> channels;
-};
-
-extern std::map<int, User> users;
-extern std::map<std::string, struct Channel> channels;
+extern std::map<int, Client> clients;
+extern std::map<std::string, Channel> channels;
 extern int connectionCount;
-extern std::set<int> operators; 
+extern std::set<int> operators;
 
 void handleKick(int clientSockfd, const std::string& targetNick, const std::string& channelName);
 void handleInvite(int clientSockfd, const std::string& targetNick, const std::string& channelName);
@@ -43,5 +37,7 @@ void handleMode(int clientSockfd, const std::string& channelName, const std::str
 int findClientByNick(const std::string& nick);
 bool isChannelOperator(int clientSockfd, const std::string& channelName);
 bool isClientInChannel(int clientSockfd, const std::string& channelName);
+bool doesChannelExist(const std::string& channelName);
+void sendMessage(int clientSockfd, const std::string& message);
 
 #endif // CHANNEL_HPP
